@@ -76,7 +76,12 @@ interface WithCheckoutPaymentProps {
     loadPaymentMethods(): Promise<CheckoutSelectors>;
     submitOrder(values: OrderRequestBody): Promise<CheckoutSelectors>;
     checkoutServiceSubscribe: CheckoutService['subscribe'];
+    checkoutService: any; // --------------[MTX MOD (Single Line)]--------------
+    getPaymentMethods: any; // --------------[MTX MOD (Single Line)]--------------
 }
+
+import { getGlobalState, setGlobalState } from './GlobalState';
+import { mtxConfig } from '../mtxConfig';
 
 interface PaymentState {
     didExceedSpamLimit: boolean;
@@ -112,6 +117,25 @@ class Payment extends Component<
         };
     });
 
+    // ------------[MTX START]------------------------
+    private getValidDefaultMethod(): PaymentMethod | undefined {
+        const { defaultMethod, methods } = this.props;
+        const { selectedMethod } = this.state;
+
+        // Usa il metodo selezionato o il default se disponibile
+        if (selectedMethod) {
+            return selectedMethod;
+        }
+
+        if (defaultMethod) {
+            return defaultMethod;
+        }
+
+        // Restituisci il primo metodo disponibile come fallback
+        return methods.length > 0 ? methods[0] : undefined;
+    }
+    // ------------[MTX END]------------------------
+
     async componentDidMount(): Promise<void> {
         const {
             finalizeOrderIfNeeded,
@@ -138,6 +162,13 @@ class Payment extends Component<
                 onFinalizeError(error);
             }
         }
+
+        // ------------[MTX START]------------------------
+        const validMethod = this.getValidDefaultMethod();
+        if (validMethod) {
+            this.setSelectedMethod(validMethod); // Metodo valido garantito
+        }
+        // ------------[MTX END]------------------------
 
         this.grandTotalChangeUnsubscribe = checkoutServiceSubscribe(
             () => this.handleCartTotalChange(),
@@ -424,7 +455,7 @@ class Payment extends Component<
 
         const { selectedMethod = defaultMethod, submitFunctions } = this.state;
 
-        analyticsTracker.clickPayButton({shouldCreateAccount: values.shouldCreateAccount});
+        analyticsTracker.clickPayButton({ shouldCreateAccount: values.shouldCreateAccount });
 
         const customSubmit =
             selectedMethod &&
@@ -457,6 +488,7 @@ class Payment extends Component<
     };
 
     private setSelectedMethod: (method?: PaymentMethod) => void = (method) => {
+        const { checkoutService, getPaymentMethods } = this.props; // --------------[MTX MOD (Single Line)]--------------
         const { selectedMethod } = this.state;
 
         if (selectedMethod === method) {
@@ -464,6 +496,17 @@ class Payment extends Component<
         }
 
         if (method) {
+            // ------------[MTX START]------------------------
+            if (method?.id == 'cod') {
+                selectCarrier(checkoutService, mtxConfig.shippingMethods.corriereContrassegno);
+            } else {
+                selectCarrier(checkoutService, mtxConfig.shippingMethods.corriereStandard);
+            }
+
+            const methodSelected = getPaymentMethods().findIndex((pay: any) => pay.id === method?.id);
+            setGlobalState('mtxIndexOfSelectedPayment', methodSelected > -1 ? methodSelected : 0);
+            // ------------[MTX END]------------------------
+
             this.trackSelectedPaymentMethod(method);
         }
 
@@ -552,8 +595,8 @@ class Payment extends Component<
 }
 
 export function mapToPaymentProps({
-        checkoutService,
-        checkoutState,
+    checkoutService,
+    checkoutState,
 }: CheckoutContextProps): WithCheckoutPaymentProps | null {
     const {
         data: {
@@ -649,12 +692,14 @@ export function mapToPaymentProps({
         filteredMethods = filteredMethods;
     }
 
+    const mtxIndexOfSelectedPayment = getGlobalState('mtxIndexOfSelectedPayment'); // --------------[MTX MOD (Single Line)]--------------
+
     return {
         applyStoreCredit: checkoutService.applyStoreCredit,
         availableStoreCredit: customer.storeCredit,
         cartUrl: config.links.cartLink,
         clearError: checkoutService.clearError,
-        defaultMethod: selectedPaymentMethod || filteredMethods[0],
+        defaultMethod: selectedPaymentMethod || filteredMethods[mtxIndexOfSelectedPayment], // --------------[MTX MOD (Single Line)]--------------
         finalizeOrderError: getFinalizeOrderError(),
         finalizeOrderIfNeeded: checkoutService.finalizeOrderIfNeeded,
         loadCheckout: checkoutService.loadCheckout,
@@ -681,7 +726,30 @@ export function mapToPaymentProps({
                 : undefined,
         usableStoreCredit:
             checkout.grandTotal > 0 ? Math.min(checkout.grandTotal, customer.storeCredit || 0) : 0,
+        checkoutService, // --------------[MTX MOD (Single Line)]--------------
+        getPaymentMethods, // --------------[MTX MOD (Single Line)]--------------
     };
 }
+
+// --------------[MTX START]--------------
+async function selectCarrier(checkoutService: any, carrierDescription: string) {
+    const checkoutState = checkoutService.getState();
+    const checkoutId = checkoutState.data.getCheckout()?.id;
+    if (checkoutId) {
+        const shippingState = await checkoutService.loadShippingOptions();
+
+        const shippingOptionId =
+            shippingState.data
+                .getShippingOptions()
+                ?.find((ship: any) => ship?.description === carrierDescription)?.id || null;
+
+        if (shippingOptionId) {
+            await checkoutService.selectShippingOption(shippingOptionId).finally(() => {
+                // UX
+            });
+        }
+    }
+}
+// --------------[MTX END]--------------
 
 export default withAnalytics(withLanguage(withCheckout(mapToPaymentProps)(Payment)));
