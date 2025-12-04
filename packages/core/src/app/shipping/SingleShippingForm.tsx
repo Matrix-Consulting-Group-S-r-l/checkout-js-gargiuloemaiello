@@ -37,6 +37,8 @@ import ShippingAddress from './ShippingAddress';
 import { SHIPPING_ADDRESS_FIELDS } from './ShippingAddressFields';
 import ShippingFormFooter from './ShippingFormFooter';
 
+import { mtxConfig } from '../mtxConfig';
+
 export interface SingleShippingFormProps {
     isBillingSameAsShipping: boolean;
     cartHasChanged: boolean;
@@ -200,7 +202,7 @@ class SingleShippingForm extends PureComponent<
         const PAYMENT_METHOD_VALID = ['amazonpay'];
         const shouldShowBillingSameAsShipping = !PAYMENT_METHOD_VALID.some(
             (method) => method === methodId,
-        );
+        );       
 
         return (
             <Form autoComplete="on">
@@ -289,6 +291,7 @@ class SingleShippingForm extends PureComponent<
         const updatedShippingAddress = addressForm && mapAddressFromFormValues(addressForm);
 
         if (Array.isArray(shippingAddress?.customFields)) {
+            console.log("[MTX] - Checking custom fields for changes");
             includeShippingOptions = !isEqual(
                 shippingAddress?.customFields,
                 updatedShippingAddress?.customFields

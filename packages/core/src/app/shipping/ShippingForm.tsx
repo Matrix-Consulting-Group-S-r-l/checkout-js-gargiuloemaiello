@@ -18,6 +18,7 @@ import { useCheckout } from '@bigcommerce/checkout/payment-integration-api';
 import isUsingMultiShipping from './isUsingMultiShipping';
 import MultiShippingForm, { type MultiShippingFormValues } from './MultiShippingForm';
 import SingleShippingForm, { type SingleShippingFormValues } from './SingleShippingForm';
+import { mtxConfig } from '../mtxConfig';
 
 export interface ShippingFormProps {
     cart: Cart;
@@ -57,37 +58,83 @@ export interface ShippingFormProps {
 const ShippingForm = ({
     cart,
     cartHasChanged,
-      consignments,
-      countriesWithAutocomplete,
-      customerMessage,
-      deinitialize,
-      deleteConsignments,
-      getFields,
-      googleMapsApiKey,
-      initialize,
-      isBillingSameAsShipping,
-      isLoading,
-      isMultiShippingMode,
-      methodId,
-      onMultiShippingSubmit,
-      onSingleShippingSubmit,
+    consignments,
+    countriesWithAutocomplete,
+    customerMessage,
+    deinitialize,
+    deleteConsignments,
+    getFields,
+    googleMapsApiKey,
+    initialize,
+    isBillingSameAsShipping,
+    isLoading,
+    isMultiShippingMode,
+    methodId,
+    onMultiShippingSubmit,
+    onSingleShippingSubmit,
     onUnhandledError,
-      shippingAddress,
-      shouldShowOrderComments,
-      signOut,
-      updateAddress,
-      isShippingStepPending,
-      isFloatingLabelEnabled,
+    shippingAddress,
+    shouldShowOrderComments,
+    signOut,
+    updateAddress,
+    isShippingStepPending,
+    isFloatingLabelEnabled,
     isInitialValueLoaded,
     shippingFormRenderTimestamp,
     setIsMultishippingMode,
 }: ShippingFormProps & WithLanguageProps) => {
     const {
         checkoutState: {
-            data: { getConfig },
+            data: { getConfig, getCustomer },
         },
     } = useCheckout();
     const config = getConfig();
+
+    const customer = getCustomer();
+    const customerId = customer?.id;
+   
+    const companyNameFromGroup = customer?.customerGroup?.name;
+    const companyNameFromAddress = customer?.addresses?.[0]?.company;
+
+    const companyName =
+        companyNameFromGroup ||
+        companyNameFromAddress ||
+        shippingAddress?.company ||
+        '';
+
+    const [companyVat, setCompanyVat] = React.useState<string>(''); // fallback iniziale
+
+    useEffect(() => {
+        if (!customerId) {
+            return;
+        }
+
+        const loadCompanyVat = async () => {
+            try {
+                const url = `https://www.bigcommerceconnector.com/gem/getCompanyData.php?customerId=${customerId}`;
+
+                const res = await fetch(url, {
+                    credentials: 'include',
+                });
+
+                if (!res.ok) {
+                    throw new Error(`HTTP ${res.status}`);
+                }
+
+                const data = await res.json();                
+
+                if (data.vatNumber) {
+                    setCompanyVat(data.vatNumber);
+                }
+            } catch (error) {
+                console.error('[MTX] - errore caricando P.IVA da backend', error);
+            }
+        };
+
+        loadCompanyVat();
+    }, [customerId]);
+
+
 
     useEffect(() => {
         if (shippingFormRenderTimestamp) {
@@ -100,7 +147,59 @@ const ShippingForm = ({
 
             setIsMultishippingMode(isMultiShippingMode);
         }
-    }, [shippingFormRenderTimestamp]);
+    }, [shippingFormRenderTimestamp,]);
+
+    useEffect(() => {
+        const pIvaId = mtxConfig.AddressCustomFields.pIvaID;
+        const pIvaInputId = `field_${pIvaId}Input`; // es: field_30Input
+
+        const intervalId = window.setInterval(() => {
+            // --- P.IVA ---
+            const pivaInput = document.getElementById(pIvaInputId) as HTMLInputElement | null;
+
+            if (pivaInput) {
+                pivaInput.readOnly = true;
+
+                // allinea sempre il valore alla P.IVA aziendale
+                if (companyVat && pivaInput.value !== companyVat) {
+                    pivaInput.value = companyVat;
+                }
+
+                pivaInput.style.backgroundColor = '#f4f4f4';
+                pivaInput.style.cursor = 'not-allowed';
+            }
+
+
+            // --- COMPANY / AZIENDA ---
+            const companyInput = document.querySelector<HTMLInputElement>(
+                'input[name="shippingAddress.company"], input[name="company"]',
+            );
+
+            if (companyInput) {
+                companyInput.readOnly = true;
+
+                // allinea sempre il valore al companyName risolto dal customer
+                if (companyName && companyInput.value !== companyName) {
+                    companyInput.value = companyName;
+                }
+
+                companyInput.style.backgroundColor = '#f4f4f4';
+                companyInput.style.cursor = 'not-allowed';
+            }
+
+            // se abbiamo settato almeno uno dei due, possiamo fermare l'intervallo
+            if (pivaInput || companyInput) {
+                window.clearInterval(intervalId);
+            }
+        }, 300);
+
+        return () => {
+            window.clearInterval(intervalId);
+        };
+    }, [shippingFormRenderTimestamp, companyName, companyVat]);
+
+
+
 
     const getMultiShippingForm = () => {
         return <MultiShippingForm
@@ -114,6 +213,61 @@ const ShippingForm = ({
         />;
     };
 
+    const pIvaCustomFieldId = `field_${mtxConfig.AddressCustomFields.pIvaID}`;
+
+    const patchedShippingAddress = shippingAddress
+        ? {
+            ...shippingAddress,
+
+            company: companyName || shippingAddress.company,
+
+            customFields: Array.isArray(shippingAddress.customFields)
+                ? shippingAddress.customFields.map(customField => {
+                    if (customField.fieldId === pIvaCustomFieldId) {
+                        const patched = {
+                            ...customField,
+                            fieldValue: companyVat, // 👈 QUI usiamo la P.IVA vera
+                        };                        
+
+                        return patched;
+                    }
+
+                    return customField;
+                })
+                : shippingAddress.customFields,
+        }
+        : shippingAddress;
+
+
+
+    const getFieldsWithPivaRequired = (countryCode?: string): FormField[] => {
+        const fields = getFields(countryCode);
+        const pIvaId = mtxConfig.AddressCustomFields.pIvaID;
+
+        return fields.map(field => {
+            const isPivaField =
+                field.name === `field_${pIvaId}` ||
+                field.name === `customField[${pIvaId}]` ||
+                field.id === pIvaId;
+
+            const isCompanyField =
+                field.name === 'company' ||
+                field.name === 'shippingAddress.company' ||
+                field.id === 'company';
+
+            if (isPivaField || isCompanyField) {
+                return {
+                    ...field,
+                    required: false,
+                };
+            }
+
+            return field;
+        });
+    };
+
+
+
     return isMultiShippingMode ? (
         getMultiShippingForm()
     ) : (
@@ -124,7 +278,7 @@ const ShippingForm = ({
             customerMessage={customerMessage}
             deinitialize={deinitialize}
             deleteConsignments={deleteConsignments}
-            getFields={getFields}
+            getFields={getFieldsWithPivaRequired}
             googleMapsApiKey={googleMapsApiKey}
             initialize={initialize}
             isBillingSameAsShipping={isBillingSameAsShipping}
@@ -136,7 +290,7 @@ const ShippingForm = ({
             methodId={methodId}
             onSubmit={onSingleShippingSubmit}
             onUnhandledError={onUnhandledError}
-            shippingAddress={shippingAddress}
+            shippingAddress={patchedShippingAddress}
             shippingFormRenderTimestamp={shippingFormRenderTimestamp}
             shouldShowOrderComments={shouldShowOrderComments}
             signOut={signOut}
