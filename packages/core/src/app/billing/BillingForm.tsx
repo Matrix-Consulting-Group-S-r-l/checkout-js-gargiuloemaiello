@@ -3,23 +3,56 @@ import {
     type FormField,
 } from '@bigcommerce/checkout-sdk';
 import { type FormikProps, withFormik } from 'formik';
-import React, { type RefObject, useRef, useState } from 'react';
+import React, { type RefObject, useRef, useState, useEffect } from 'react'; // [MTX] - import useEffect
 import { lazy } from 'yup';
 
 import { TranslatedString, withLanguage, type WithLanguageProps } from '@bigcommerce/checkout/locale';
 import { useCheckout } from '@bigcommerce/checkout/payment-integration-api';
 import { usePayPalFastlaneAddress } from '@bigcommerce/checkout/paypal-fastlane-integration';
 import { AddressFormSkeleton, LoadingOverlay, useThemeContext } from '@bigcommerce/checkout/ui';
+import { mtxConfig } from '../mtxConfig'; // [MTX] - import mtxConfig
+
+// [MTX] - helper per rendere non obbligatori company + P.IVA su Billing
+const getFieldsWithPivaReadonly = (
+    getFields: (countryCode?: string) => FormField[],
+    countryCode?: string,
+): FormField[] => {
+    const fields = getFields(countryCode);
+    const pIvaId = mtxConfig.AddressCustomFields.pIvaID;
+
+    return fields.map(field => {
+        const isPivaField =
+            field.name === `field_${pIvaId}` ||
+            field.name === `customField[${pIvaId}]` ||
+            // a volte BigCommerce usa l'id puro
+            field.id === pIvaId;
+
+        const isCompanyField =
+            field.name === 'company' ||
+            field.name === 'billingAddress.company' ||
+            field.name === 'shippingAddress.company' || // safe anche se non usato qui
+            field.id === 'company';
+
+        if (isPivaField || isCompanyField) {
+            return {
+                ...field,
+                required: false,
+            };
+        }
+
+        return field;
+    });
+};
 
 import {
-  AddressForm,
-  type AddressFormValues,
-  AddressSelect,
-  AddressType,
-  getAddressFormFieldsValidationSchema,
-  getTranslateAddressError,
-  isValidCustomerAddress,
-  mapAddressToFormValues,
+    AddressForm,
+    type AddressFormValues,
+    AddressSelect,
+    AddressType,
+    getAddressFormFieldsValidationSchema,
+    getTranslateAddressError,
+    isValidCustomerAddress,
+    mapAddressToFormValues,
 } from '../address';
 import { EMPTY_ARRAY, isFloatingLabelEnabled as getIsFloatingLabelEnabled } from '../common/utility';
 import { getCustomFormFieldsValidationSchema } from '../formFields';
@@ -69,10 +102,106 @@ const BillingForm = ({
         throw new Error('checkout data is not available');
     }
 
+    // --[MTX] -- Init --
+    const customerId = customer?.id;
+
+    const companyNameFromGroup = customer?.customerGroup?.name;
+    const companyNameFromAddress = customer?.addresses?.[0]?.company;
+
+    const companyName =
+        companyNameFromGroup ||
+        companyNameFromAddress ||
+        billingAddress?.company ||
+        '';
+
+    const [companyVat, setCompanyVat] = React.useState<string>(''); // fallback iniziale
+
+
+    useEffect(() => {
+        if (!customerId) {
+            return;
+        }
+
+        const loadCompanyVat = async () => {
+            try {
+                const url = `https://www.bigcommerceconnector.com/gem/getCompanyData.php?customerId=${customerId}`;
+
+                const res = await fetch(url, {
+                    credentials: 'include',
+                });
+
+                if (!res.ok) {
+                    throw new Error(`HTTP ${res.status}`);
+                }
+
+                const data = await res.json();
+
+                if (data.vatNumber) {
+                    setCompanyVat(data.vatNumber);
+                }
+            } catch (error) {
+                console.error('[MTX] - errore caricando P.IVA da backend', error);
+            }
+        };
+
+        loadCompanyVat();
+    }, [customerId]);
+
+    useEffect(() => {
+        const pIvaId = mtxConfig.AddressCustomFields.pIvaID;
+        const pIvaInputId = `field_${pIvaId}Input`; // es: field_30Input
+
+        const intervalId = window.setInterval(() => {
+            // --- P.IVA ---
+            const pivaInput = document.getElementById(pIvaInputId) as HTMLInputElement | null;
+
+            if (pivaInput) {
+                pivaInput.readOnly = true;
+
+                // allinea sempre il valore alla P.IVA aziendale
+                if (companyVat && pivaInput.value !== companyVat) {
+                    pivaInput.value = companyVat;
+                }
+
+                pivaInput.style.backgroundColor = '#f4f4f4';
+                pivaInput.style.cursor = 'not-allowed';
+            }
+
+
+            // --- COMPANY / AZIENDA ---
+            const companyInput = document.querySelector<HTMLInputElement>(
+                'input[name="shippingAddress.company"], input[name="company"]',
+            );
+
+            if (companyInput) {
+                companyInput.readOnly = true;
+
+                // allinea sempre il valore al companyName risolto dal customer
+                if (companyName && companyInput.value !== companyName) {
+                    companyInput.value = companyName;
+                }
+
+                companyInput.style.backgroundColor = '#f4f4f4';
+                companyInput.style.cursor = 'not-allowed';
+            }
+
+            // se abbiamo settato almeno uno dei due, possiamo fermare l'intervallo
+            if (pivaInput || companyInput) {
+                window.clearInterval(intervalId);
+            }
+        }, 300);
+
+        return () => {
+            window.clearInterval(intervalId);
+        };
+    }, [companyName, companyVat]);
+
+    // --[MTX] -- End --
+
     const isGuest = customer.isGuest;
     const addresses = customer.addresses;
     const shouldRenderStaticAddress = methodId === 'amazonpay';
-    const allFormFields = getFields(values.countryCode);
+    const allFormFields = getFieldsWithPivaReadonly(getFields, values.countryCode);
     const customFormFields = allFormFields.filter(({ custom }) => custom);
     const hasCustomFormFields = customFormFields.length > 0;
     const editableFormFields =
@@ -84,11 +213,11 @@ const BillingForm = ({
         isValidCustomerAddress(
             billingAddress,
             billingAddresses,
-            getFields(billingAddress.countryCode),
+            getFieldsWithPivaReadonly(getFields, billingAddress.countryCode),
         );
-    const isUpdating  = isUpdatingBillingAddress() || isUpdatingCheckout();
+    const isUpdating = isUpdatingBillingAddress() || isUpdatingCheckout();
     const { enableOrderComments } = config.checkoutSettings;
-    const shouldShowOrderComments  = enableOrderComments && getShippableItemsCount(cart) < 1;
+    const shouldShowOrderComments = enableOrderComments && getShippableItemsCount(cart) < 1;
 
     const handleSelectAddress = async (address: Partial<Address>) => {
         setIsResettingAddress(true);
@@ -180,7 +309,10 @@ export default withLanguage(
         },
         mapPropsToValues: ({ getFields, customerMessage, billingAddress }) => ({
             ...mapAddressToFormValues(
-                getFields(billingAddress && billingAddress.countryCode),
+                getFieldsWithPivaReadonly(
+                    getFields,
+                    billingAddress && billingAddress.countryCode,
+                ),
                 billingAddress,
             ),
             orderComment: customerMessage,
@@ -189,7 +321,10 @@ export default withLanguage(
             !!billingAddress &&
             getAddressFormFieldsValidationSchema({
                 language,
-                formFields: getFields(billingAddress.countryCode),
+                formFields: getFieldsWithPivaReadonly(
+                    getFields,
+                    billingAddress.countryCode,
+                ),
             }).isValidSync(billingAddress),
         validationSchema: ({
             language,
@@ -198,17 +333,23 @@ export default withLanguage(
         }: BillingFormProps & WithLanguageProps) =>
             methodId === 'amazonpay'
                 ? lazy<Partial<AddressFormValues>>((values) =>
-                      getCustomFormFieldsValidationSchema({
-                          translate: getTranslateAddressError(language),
-                          formFields: getFields(values && values.countryCode),
-                      }),
-                  )
+                    getCustomFormFieldsValidationSchema({
+                        translate: getTranslateAddressError(language),
+                        formFields: getFieldsWithPivaReadonly(
+                            getFields,
+                            values && values.countryCode,
+                        ),
+                    }),
+                )
                 : lazy<Partial<AddressFormValues>>((values) =>
-                      getAddressFormFieldsValidationSchema({
-                          language,
-                          formFields: getFields(values && values.countryCode),
-                      }),
-                  ),
+                    getAddressFormFieldsValidationSchema({
+                        language,
+                        formFields: getFieldsWithPivaReadonly(
+                            getFields,
+                            values && values.countryCode,
+                        ),
+                    }),
+                ),
         enableReinitialize: true,
     })(BillingForm),
 );
