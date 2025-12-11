@@ -37,8 +37,6 @@ import ShippingAddress from './ShippingAddress';
 import { SHIPPING_ADDRESS_FIELDS } from './ShippingAddressFields';
 import ShippingFormFooter from './ShippingFormFooter';
 
-import { mtxConfig } from '../mtxConfig';
-
 export interface SingleShippingFormProps {
     isBillingSameAsShipping: boolean;
     cartHasChanged: boolean;
